@@ -99,7 +99,7 @@ void loop() {
       }
 
       if (btn2.contains(x, y)) {
-        sendKeyCombo(HID_KEY_A);
+        sendKeyCombo(HID_KEY_F14);
         buttonEffect(btn2, "Nueva Pest.", btn2X, btnY, TFT_BLUE);
         alreadyFired = true;
       }

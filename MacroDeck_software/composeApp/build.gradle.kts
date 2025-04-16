@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+    kotlin("plugin.serialization") version "1.9.0" // Usa la versión de Kotlin que estés usando
 }
 
 kotlin {
@@ -26,6 +27,7 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutines.swing)
             implementation("com.github.kwhat:jnativehook:2.2.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
         }
     }
 }
