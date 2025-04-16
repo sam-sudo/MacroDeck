@@ -1,0 +1,29 @@
+# Archivos de compilación y cachés
+.gradle/
+build/
+**/build/
+out/
+bin/
+.cxx/
+.externalNativeBuild/
+
+# Configuración local del proyecto
+.idea/
+*.iml
+local.properties
+*.log
+
+# Archivos específicos de Kotlin/Compose
+.kotlin/
+
+# macOS y Windows
+.DS_Store
+Thumbs.db
+
+# Archivos de depuración de Android Studio
+captures/
+
+# Ignorar Xcode si no lo usas (puedes quitar esto si solo haces escritorio)
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
