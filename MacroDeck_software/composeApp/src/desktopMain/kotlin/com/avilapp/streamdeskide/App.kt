@@ -55,13 +55,13 @@ fun App() {
 
     val frame = JFrame("MacroDeck")
     frame.defaultCloseOperation = JFrame.HIDE_ON_CLOSE
-    frame.setSize(600, 400)
-    frame.layout = GridLayout(2, 4, 10, 10)
+    frame.setSize(800, 600)
+    frame.layout = GridLayout(3, 4, 10, 10)
     frame.setLocationRelativeTo(null)
     frame.background = Color(24, 24, 24)
     frame.contentPane.background = Color(24, 24, 24)
 
-    val buttons = List(8) { JPanel(BorderLayout()) }
+    val buttons = List(12) { JPanel(BorderLayout()) }
     buttons.forEachIndexed { index, panel ->
         val id = 91 + index
         val button = JButton()
@@ -70,18 +70,33 @@ fun App() {
         styleButton(button, id, frame)
         titleField.text = ""
         titleField.addActionListener {
-            sendTitleToPico(titleField.text, if (id == 91) "TITLE1" else "TITLE2")
+            sendTitleToPico(titleField.text, "TITLE${id - 90}")
         }
 
-        panel.add(button, BorderLayout.CENTER)
-        panel.add(titleField, BorderLayout.SOUTH)
+        val contentPanel = JPanel(BorderLayout())
+        contentPanel.add(button, BorderLayout.CENTER)
+        contentPanel.add(titleField, BorderLayout.SOUTH)
 
-        if (index <= 1) {
-            button.addActionListener { showConfigDialog(id) }
-        } else {
-            button.isEnabled = false
+        val uploadButton = JButton("Subir imagen")
+        uploadButton.addActionListener {
+            val fileChooser = JFileChooser().apply {
+                fileSelectionMode = JFileChooser.FILES_ONLY
+            }
+            if (fileChooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+                val file = fileChooser.selectedFile
+                if (file.extension.lowercase() in listOf("png", "jpg", "jpeg")) {
+                    val imageRGB = convertToRGB565Enhanced(file)
+                    sendIconToPico(imageRGB, "ICON${id - 90}")
+                }
+            }
         }
 
+        val wrapper = JPanel(BorderLayout())
+        wrapper.add(contentPanel, BorderLayout.CENTER)
+        wrapper.add(uploadButton, BorderLayout.SOUTH)
+
+        panel.add(wrapper, BorderLayout.CENTER)
+        button.addActionListener { showConfigDialog(id) }
         frame.add(panel)
     }
 
@@ -113,6 +128,7 @@ fun App() {
     GlobalScreen.registerNativeHook()
     GlobalScreen.addNativeKeyListener(object : NativeKeyListener {
         override fun nativeKeyPressed(e: NativeKeyEvent) {
+            println("✅ Ejecutado: ${e.keyCode}")
             val actions = config.buttonMap[e.keyCode] ?: return
             actions.forEach { action ->
                 when (action) {
@@ -243,8 +259,8 @@ fun styleButton(btn: JButton, id: Int, frame: JFrame) {
                 val image = ImageIcon(file.absolutePath).image.getScaledInstance(128, 128, Image.SCALE_SMOOTH)
                 btn.icon = ImageIcon(image)
 
-                val rgb565 = convertToRGB565(file)
-                sendIconToPico(rgb565, if (id == 91) "ICON1" else "ICON2")
+                val rgb565 = convertToRGB565Enhanced(file)
+                sendIconToPico(rgb565, "ICON${id - 90}")
                 return true
             }
             return false
@@ -263,20 +279,37 @@ fun styleButton(btn: JButton, id: Int, frame: JFrame) {
     })*/
 }
 
-fun convertToRGB565(file: File): UShortArray {
+fun convertToRGB565Enhanced(file: File): UShortArray {
     val original = ImageIO.read(file)
-    val scaled = BufferedImage(48, 48, BufferedImage.TYPE_INT_RGB)
+    val scaled = BufferedImage(90, 90, BufferedImage.TYPE_INT_RGB)
     val g = scaled.createGraphics()
-    g.drawImage(original, 0, 0, 48, 48, null)
+    g.drawImage(original, 0, 0, 90, 90, null)
     g.dispose()
-    return UShortArray(48 * 48) { i ->
-        val x = i % 48
-        val y = i / 48
+
+    // Mejora de brillo y contraste manual (simple y efectiva)
+    val brightnessFactor = 1.4
+    val contrastFactor = 1.3
+
+    return UShortArray(90 * 90) { i ->
+        val x = i % 90
+        val y = i / 90
         val rgb = scaled.getRGB(x, y)
-        val r = (rgb shr 16) and 0xFF
-        val g1 = (rgb shr 8) and 0xFF
-        val b = rgb and 0xFF
-        ((r shr 3) shl 11 or (g1 shr 2) shl 5 or (b shr 3)).toUShort()
+
+        var r = (rgb shr 16) and 0xFF
+        var g = (rgb shr 8) and 0xFF
+        var b = rgb and 0xFF
+
+        // Brillo
+        r = (r * brightnessFactor).coerceAtMost(255.0).toInt()
+        g = (g * brightnessFactor).coerceAtMost(255.0).toInt()
+        b = (b * brightnessFactor).coerceAtMost(255.0).toInt()
+
+        // Contraste
+        r = ((r - 128) * contrastFactor + 128).coerceIn(0.0, 255.0).toInt()
+        g = ((g - 128) * contrastFactor + 128).coerceIn(0.0, 255.0).toInt()
+        b = ((b - 128) * contrastFactor + 128).coerceIn(0.0, 255.0).toInt()
+
+        ((r shr 3) shl 11 or (g shr 2) shl 5 or (b shr 3)).toUShort()
     }
 }
 
@@ -286,11 +319,21 @@ fun sendIconToPico(rgb565: UShortArray, iconId: String = "ICON1") {
     if (!port.openPort()) return
     try {
         val output = port.outputStream
+        // Envía cabecera
         output.write("$iconId\n".toByteArray())
+        output.flush()
+
+        // Espera para que el Pico se prepare
+        Thread.sleep(50)
+
         rgb565.forEach {
             output.write(it.toInt() and 0xFF)
             output.write((it.toInt() shr 8) and 0xFF)
         }
+
+        // Espera para que el Pico se prepare
+        Thread.sleep(50)
+
         output.write("END\n".toByteArray())
         output.flush()
     } finally {
