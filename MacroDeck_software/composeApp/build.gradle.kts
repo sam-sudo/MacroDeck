@@ -28,6 +28,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.swing)
             implementation("com.github.kwhat:jnativehook:2.2.2")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+            implementation("com.fazecast:jSerialComm:2.9.3")
+
         }
     }
 }

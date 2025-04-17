@@ -3,19 +3,19 @@ package com.avilapp.streamdeskide
 import com.github.kwhat.jnativehook.GlobalScreen
 import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent
 import com.github.kwhat.jnativehook.keyboard.NativeKeyListener
+import com.fazecast.jSerialComm.SerialPort
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*
 import java.awt.*
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
-import java.awt.dnd.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.logging.Level
-import java.util.logging.Logger
 import javax.imageio.ImageIO
 import javax.swing.*
 
@@ -32,7 +32,7 @@ sealed class ButtonAction {
 }
 
 @Serializable
-data class Config(val buttonMap: Map<Int, ButtonAction>)
+data class Config(val buttonMap: Map<Int, List<ButtonAction>>)
 
 val configFilePath = Paths.get("button_config.json")
 var config = Config(buttonMap = emptyMap())
@@ -40,8 +40,7 @@ var config = Config(buttonMap = emptyMap())
 fun loadConfig() {
     if (Files.exists(configFilePath)) {
         val text = Files.readString(configFilePath)
-        val json = Json { ignoreUnknownKeys = true }
-        config = json.decodeFromString(text)
+        config = Json { ignoreUnknownKeys = true }.decodeFromString(text)
     }
 }
 
@@ -62,17 +61,29 @@ fun App() {
     frame.background = Color(24, 24, 24)
     frame.contentPane.background = Color(24, 24, 24)
 
-    val buttons = List(8) { JButton() }
-    buttons.forEachIndexed { index, button ->
-        styleButton(button, if (index == 0) 91 else 92, frame)
-        if (index == 0 || index == 1) {
-            button.addActionListener { showConfigDialog(91 + index) }
+    val buttons = List(8) { JPanel(BorderLayout()) }
+    buttons.forEachIndexed { index, panel ->
+        val id = 91 + index
+        val button = JButton()
+        val titleField = JTextField()
+
+        styleButton(button, id, frame)
+        titleField.text = ""
+        titleField.addActionListener {
+            sendTitleToPico(titleField.text, if (id == 91) "TITLE1" else "TITLE2")
+        }
+
+        panel.add(button, BorderLayout.CENTER)
+        panel.add(titleField, BorderLayout.SOUTH)
+
+        if (index <= 1) {
+            button.addActionListener { showConfigDialog(id) }
         } else {
             button.isEnabled = false
         }
-        frame.add(button)
-    }
 
+        frame.add(panel)
+    }
 
     val iconURL = StreamDeskIconLoader::class.java.classLoader.getResource("ic_app.png")
     val trayIcon = TrayIcon(Toolkit.getDefaultToolkit().getImage(iconURL), "MacroDeck")
@@ -99,38 +110,116 @@ fun App() {
     tray.add(trayIcon)
     frame.isVisible = true
 
-    Logger.getLogger(GlobalScreen::class.java.name).level = Level.OFF
     GlobalScreen.registerNativeHook()
     GlobalScreen.addNativeKeyListener(object : NativeKeyListener {
         override fun nativeKeyPressed(e: NativeKeyEvent) {
-            val action = config.buttonMap[e.keyCode] ?: return
-            println("✅ Acción encontrada para keyCode ${e.keyCode}")
-            when (action) {
-                is ButtonAction.LaunchExe -> launchExecutable(File(action.path))
-                is ButtonAction.CreateFolders -> {
-                    try {
-                        action.folders.forEach { folder ->
-                            val dir = File(action.baseDir, folder)
-                            if (!dir.exists()) dir.mkdirs()
-                        }
-                        println("✅ Carpetas creadas")
-                    } catch (ex: Exception) {
-                        println("❌ Error al crear carpetas: ${ex.message}")
+            val actions = config.buttonMap[e.keyCode] ?: return
+            actions.forEach { action ->
+                when (action) {
+                    is ButtonAction.LaunchExe -> launchExecutable(File(action.path))
+                    is ButtonAction.CreateFolders -> action.folders.forEach {
+                        File(action.baseDir, it).mkdirs()
                     }
-                }
-                is ButtonAction.RunCommand -> {
-                    try {
-                        ProcessBuilder("cmd", "/c", "start", "", action.command).start()
-                        println("✅ Comando ejecutado: ${action.command}")
-                    } catch (ex: Exception) {
-                        println("❌ Error al ejecutar comando: ${ex.message}")
-                    }
+                    is ButtonAction.RunCommand -> ProcessBuilder("cmd", "/c", "start", "", action.command).start()
                 }
             }
         }
         override fun nativeKeyReleased(e: NativeKeyEvent) {}
         override fun nativeKeyTyped(e: NativeKeyEvent) {}
     })
+}
+
+fun showConfigDialog(buttonId: Int) {
+    val panel = JPanel(GridLayout(0, 1))
+    val actionList = JTextArea(6, 30)
+    actionList.isEditable = false
+    val currentActions = config.buttonMap[buttonId]?.toMutableList() ?: mutableListOf()
+    actionList.text = currentActions.joinToString("\n") {
+        when (it) {
+            is ButtonAction.LaunchExe -> "Abrir: ${it.path}"
+            is ButtonAction.CreateFolders -> "Crear carpetas en ${it.baseDir}: ${it.folders.joinToString()}"
+            is ButtonAction.RunCommand -> "Comando: ${it.command}"
+        }
+    }
+
+    val addButton = JButton("Añadir acción")
+    val removeButton = JButton("Eliminar acción")
+    val saveButton = JButton("Guardar")
+
+    var hasChanges = false
+
+    addButton.addActionListener {
+        val options = arrayOf("Ejecutar .exe", "Crear carpetas", "Ejecutar comando Win+R")
+        val choice = JOptionPane.showOptionDialog(null, "Nueva acción para el botón $buttonId:", "Añadir Acción",
+            JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, options, options[0])
+
+        when (choice) {
+            0 -> {
+                val chooser = JFileChooser()
+                if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+                    val file = chooser.selectedFile
+                    if (file.extension.lowercase() == "exe" || file.extension.lowercase() == "lnk") {
+                        currentActions.add(ButtonAction.LaunchExe(file.absolutePath))
+                        actionList.append("\nAbrir: ${file.absolutePath}")
+                        hasChanges = true
+                    }
+                }
+            }
+            1 -> {
+                val base = JOptionPane.showInputDialog("Ruta base:") ?: return@addActionListener
+                val names = JOptionPane.showInputDialog("Nombres de carpetas separados por coma:")?.split(',')?.map { it.trim() } ?: return@addActionListener
+                currentActions.add(ButtonAction.CreateFolders(base, names))
+                actionList.append("\nCrear carpetas en $base: ${names.joinToString()}")
+                hasChanges = true
+            }
+            2 -> {
+                val cmd = JOptionPane.showInputDialog("Comando Win+R:") ?: return@addActionListener
+                currentActions.add(ButtonAction.RunCommand(cmd))
+                actionList.append("\nComando: $cmd")
+                hasChanges = true
+            }
+        }
+    }
+
+    removeButton.addActionListener {
+        if (currentActions.isEmpty()) return@addActionListener
+        val options = currentActions.mapIndexed { i, it ->
+            when (it) {
+                is ButtonAction.LaunchExe -> "$i - Abrir: ${it.path}"
+                is ButtonAction.CreateFolders -> "$i - Crear carpetas en ${it.baseDir}: ${it.folders.joinToString()}"
+                is ButtonAction.RunCommand -> "$i - Comando: ${it.command}"
+            }
+        }.toTypedArray()
+        val selected = JOptionPane.showInputDialog(null, "Selecciona acción a eliminar:", "Eliminar Acción",
+            JOptionPane.PLAIN_MESSAGE, null, options, options.firstOrNull()) ?: return@addActionListener
+        val index = selected.toString().split(" - ").first().toIntOrNull() ?: return@addActionListener
+        if (index in currentActions.indices) {
+            currentActions.removeAt(index)
+            actionList.text = currentActions.joinToString("\n") {
+                when (it) {
+                    is ButtonAction.LaunchExe -> "Abrir: ${it.path}"
+                    is ButtonAction.CreateFolders -> "Crear carpetas en ${it.baseDir}: ${it.folders.joinToString()}"
+                    is ButtonAction.RunCommand -> "Comando: ${it.command}"
+                }
+            }
+            hasChanges = true
+        }
+    }
+
+    saveButton.addActionListener {
+        if (hasChanges) {
+            config = config.copy(buttonMap = config.buttonMap + (buttonId to currentActions))
+            saveConfig()
+        }
+    }
+
+    panel.add(JLabel("Acciones actuales:"))
+    panel.add(JScrollPane(actionList))
+    panel.add(addButton)
+    panel.add(removeButton)
+    panel.add(saveButton)
+
+    JOptionPane.showMessageDialog(null, panel, "Configuración Botón $buttonId", JOptionPane.PLAIN_MESSAGE)
 }
 
 fun styleButton(btn: JButton, id: Int, frame: JFrame) {
@@ -142,13 +231,10 @@ fun styleButton(btn: JButton, id: Int, frame: JFrame) {
     btn.horizontalAlignment = SwingConstants.CENTER
     btn.verticalAlignment = SwingConstants.CENTER
 
-    // Imagen por defecto redimensionada
     val iconURL = StreamDeskIconLoader::class.java.classLoader.getResource("ic_app.png")
     val rawIcon = ImageIcon(iconURL)
-    val scaledIcon = ImageIcon(rawIcon.image.getScaledInstance(128, 128, Image.SCALE_SMOOTH))
-    btn.icon = scaledIcon
+    btn.icon = ImageIcon(rawIcon.image.getScaledInstance(128, 128, Image.SCALE_SMOOTH))
 
-    // Drag & drop para cambiar la imagen
     btn.transferHandler = object : TransferHandler() {
         override fun importData(comp: JComponent, t: Transferable): Boolean {
             if (t.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
@@ -156,118 +242,87 @@ fun styleButton(btn: JButton, id: Int, frame: JFrame) {
                 val file = fileList.firstOrNull() as? File ?: return false
                 val image = ImageIcon(file.absolutePath).image.getScaledInstance(128, 128, Image.SCALE_SMOOTH)
                 btn.icon = ImageIcon(image)
-                // Aquí podrías guardar el path en la config si quieres persistir el icono
+
+                val rgb565 = convertToRGB565(file)
+                sendIconToPico(rgb565, if (id == 91) "ICON1" else "ICON2")
                 return true
             }
             return false
         }
-
         override fun canImport(support: TransferSupport): Boolean {
             return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
         }
     }
 
-    // Click derecho para configurar
-    btn.addMouseListener(object : MouseAdapter() {
+    /*btn.addMouseListener(object : MouseAdapter() {
         override fun mousePressed(e: MouseEvent) {
-            if (e.button == MouseEvent.BUTTON3) {
+            if (e.button == MouseEvent.BUTTON3 || e.button == MouseEvent.BUTTON1) {
                 showConfigDialog(id)
             }
         }
-    })
+    })*/
 }
 
-fun showConfigDialog(buttonId: Int) {
-    val dialog = JDialog()
-    dialog.title = "Configurar Botón $buttonId"
-    dialog.layout = GridLayout(5, 1)
-    dialog.setSize(400, 300)
-    dialog.setLocationRelativeTo(null)
-
-    val typeSelector = JComboBox(arrayOf("Ejecutar .exe", "Crear carpetas", "Ejecutar comando Win+R"))
-    val exeField = JTextField()
-    val folderPathField = JTextField()
-    val folderNamesField = JTextField()
-    val commandField = JTextField()
-
-    val exeDropPanel = JPanel(BorderLayout())
-    exeDropPanel.border = BorderFactory.createTitledBorder("Arrastra un .exe o .lnk aquí")
-    exeDropPanel.background = Color.LIGHT_GRAY
-    exeDropPanel.add(exeField, BorderLayout.CENTER)
-    exeDropPanel.transferHandler = object : TransferHandler() {
-        override fun importData(support: TransferHandler.TransferSupport): Boolean {
-            if (!support.isDrop) return false
-            val files = support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*> ?: return false
-            val file = files.firstOrNull() as? File ?: return false
-            exeField.text = file.absolutePath
-            return true
-        }
-
-        override fun canImport(support: TransferHandler.TransferSupport): Boolean {
-            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
-        }
+fun convertToRGB565(file: File): UShortArray {
+    val original = ImageIO.read(file)
+    val scaled = BufferedImage(48, 48, BufferedImage.TYPE_INT_RGB)
+    val g = scaled.createGraphics()
+    g.drawImage(original, 0, 0, 48, 48, null)
+    g.dispose()
+    return UShortArray(48 * 48) { i ->
+        val x = i % 48
+        val y = i / 48
+        val rgb = scaled.getRGB(x, y)
+        val r = (rgb shr 16) and 0xFF
+        val g1 = (rgb shr 8) and 0xFF
+        val b = rgb and 0xFF
+        ((r shr 3) shl 11 or (g1 shr 2) shl 5 or (b shr 3)).toUShort()
     }
+}
 
-    val folderPanel = JPanel(GridLayout(2, 1))
-    folderPanel.border = BorderFactory.createTitledBorder("Carpetas")
-    folderPanel.add(folderPathField)
-    folderPanel.add(folderNamesField)
-
-    val commandPanel = JPanel(BorderLayout())
-    commandPanel.border = BorderFactory.createTitledBorder("Comando Win+R")
-    commandPanel.add(commandField, BorderLayout.CENTER)
-
-    val actionButton = JButton("Guardar")
-
-    dialog.add(typeSelector)
-    dialog.add(exeDropPanel)
-    dialog.add(folderPanel)
-    dialog.add(commandPanel)
-    dialog.add(actionButton)
-
-    fun updateVisibility() {
-        exeDropPanel.isVisible = typeSelector.selectedIndex == 0
-        folderPanel.isVisible = typeSelector.selectedIndex == 1
-        commandPanel.isVisible = typeSelector.selectedIndex == 2
-    }
-
-    updateVisibility()
-    typeSelector.addActionListener { updateVisibility() }
-
-    actionButton.addActionListener {
-        when (typeSelector.selectedIndex) {
-            0 -> {
-                val path = exeField.text
-                if (path.isNotBlank()) {
-                    config = config.copy(buttonMap = config.buttonMap + (buttonId to ButtonAction.LaunchExe(path)))
-                }
-            }
-            1 -> {
-                val baseDir = folderPathField.text
-                val folders = folderNamesField.text.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                if (baseDir.isNotBlank() && folders.isNotEmpty()) {
-                    config = config.copy(buttonMap = config.buttonMap + (buttonId to ButtonAction.CreateFolders(baseDir, folders)))
-                }
-            }
-            2 -> {
-                val cmd = commandField.text
-                if (cmd.isNotBlank()) {
-                    config = config.copy(buttonMap = config.buttonMap + (buttonId to ButtonAction.RunCommand(cmd)))
-                }
-            }
+fun sendIconToPico(rgb565: UShortArray, iconId: String = "ICON1") {
+    val port = findPicoPort() ?: return
+    port.baudRate = 115200
+    if (!port.openPort()) return
+    try {
+        val output = port.outputStream
+        output.write("$iconId\n".toByteArray())
+        rgb565.forEach {
+            output.write(it.toInt() and 0xFF)
+            output.write((it.toInt() shr 8) and 0xFF)
         }
-        saveConfig()
-        dialog.dispose()
+        output.write("END\n".toByteArray())
+        output.flush()
+    } finally {
+        port.closePort()
     }
+}
 
-    dialog.isVisible = true
+fun sendTitleToPico(text: String, titleId: String) {
+    val port = findPicoPort() ?: return
+    port.baudRate = 115200
+    if (!port.openPort()) return
+    try {
+        val output = port.outputStream
+        output.write("$titleId\n".toByteArray())
+        output.write("$text\n".toByteArray())
+        output.write("END\n".toByteArray())
+        output.flush()
+        println("✅ Título enviado a $titleId: $text")
+    } finally {
+        port.closePort()
+    }
+}
+
+fun findPicoPort(): SerialPort? {
+    return SerialPort.getCommPorts().firstOrNull {
+        it.descriptivePortName.contains("USB", ignoreCase = true) ||
+                it.descriptivePortName.contains("Pico", ignoreCase = true)
+    }
 }
 
 fun launchExecutable(file: File) {
-    if (!file.exists()) {
-        println("❌ El archivo no existe: ${file.absolutePath}")
-        return
-    }
+    if (!file.exists()) return
     try {
         if (file.extension.lowercase() == "lnk") {
             ProcessBuilder("cmd", "/c", "start", "", "\"${file.absolutePath}\"").start()
